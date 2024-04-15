@@ -131,6 +131,8 @@ dmypy.json
 # checkpoint
 *.pth
 outputs/
+outputs0/
+data/
 
 .idea/
 recognize-anything/
