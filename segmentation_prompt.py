@@ -77,6 +77,8 @@ for line in open(data_instance):
     # TODO: new caption
     SOURCE_IMAGE_PATH = line["image"]
     CLASSES = line["prompt"]
+    CLASSES = CLASSES.split(", ")
+
 
     image = cv2.imread(SOURCE_IMAGE_PATH)
 
