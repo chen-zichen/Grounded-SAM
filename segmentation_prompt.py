@@ -26,8 +26,8 @@ parser.add_argument("--sam_checkpoint", type=str, default="./sam_vit_h_4b8939.pt
 
 parser.add_argument("--image_path", type=str, default="./assets/demo2.jpg", help="Path to the image")
 parser.add_argument("--prompt_path", type=str, default="./", help="Classes here is the prompt.")
-parser.add_argument("--box_threshold", type=float, default=0.25, help="Box threshold")
-parser.add_argument("--text_threshold", type=float, default=0.25, help="Text threshold")
+parser.add_argument("--box_threshold", type=float, default=0.20, help="Box threshold")
+parser.add_argument("--text_threshold", type=float, default=0.20, help="Text threshold")
 parser.add_argument("--nms_threshold", type=float, default=0.8, help="NMS threshold")
 parser.add_argument("--dataset_name", type=str, default="Clipart", help="Name of the dataset")
 parser.add_argument("--dataset_path", type=str, default="./data/", help="Path to the dataset")
@@ -69,15 +69,21 @@ DATASET_PATH = arg.dataset_path
 dataset_path = f"{DATASET_PATH}/{DATASET}/"
 
 # load data instance
-data_instance = f"{dataset_path}/data/prompts_selected.jsonl"
+image_instance = f"{dataset_path}/data/prompts_selected.jsonl"
+object_instance = f"{dataset_path}/data/objects.jsonl"
 
-for line in open(data_instance):
+for line in open(image_instance):
     line = json.loads(line)
-
-    # TODO: new caption
-    SOURCE_IMAGE_PATH = line["image"]
+    # find the same task_id in the object_instance
+    for obj_line in open(object_instance):
+        obj_line = json.loads(obj_line)
+        if obj_line["task_id"] == line["task_id"]:
+            line["prompt"] = obj_line["objects"]
+            break
+    SOURCE_IMAGE_PATH = "data/Clipart/figures/" + line["image"]
     CLASSES = line["prompt"]
-    CLASSES = CLASSES.split(", ")
+    # it is a list of strings
+    CLASSES = [c.lower() for c in CLASSES]
 
 
     image = cv2.imread(SOURCE_IMAGE_PATH)
@@ -107,6 +113,7 @@ for line in open(data_instance):
 
     # save the annotated grounding dino image
     cv2.imwrite(f"{output_path}/{task_id}.jpg", annotated_frame)
+
 
 
     # NMS post process
@@ -151,6 +158,28 @@ for line in open(data_instance):
         f"{CLASSES[class_id]} {confidence:0.2f}" 
         for _, _, confidence, class_id, _, _ 
         in detections]
+    
+    # save label and bounding box
+    info = {}
+    for i, (box, _, confidence, class_id, _, _) in enumerate(detections):
+        x1, y1, x2, y2 = box
+        # convert to float
+        x1, y1, x2, y2 = float(x1), float(y1), float(x2), float(y2)
+
+        print("box:", box)
+        print("class_id:", CLASSES[class_id])
+        print("confidence:", confidence)
+        
+        confidence = round(float(confidence), 4)
+
+        info[i] = {
+            "box": [x1, y1, x2, y2],
+            "class_id": CLASSES[class_id],
+            "confidence": confidence
+        }
+
+        
+
     annotated_image = mask_annotator.annotate(scene=image.copy(), detections=detections)
     annotated_image = box_annotator.annotate(scene=annotated_image, detections=detections, labels=labels)
 
@@ -161,3 +190,10 @@ for line in open(data_instance):
         os.makedirs(output_path)
     
     cv2.imwrite(f"{output_path}/{task_id}.jpg", annotated_image)
+    
+    with open(f"{output_path}/info.jsonl", "a") as f:
+        f.write(json.dumps({
+            "task_id": task_id,
+            "detections": info
+        }) + "\n")
+    

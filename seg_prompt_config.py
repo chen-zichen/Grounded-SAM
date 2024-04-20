@@ -11,8 +11,8 @@ SAM_CHECKPOINT_PATH = "./sam_vit_h_4b8939.pth"
 # Predict classes and hyper-param for GroundingDINO
 SOURCE_IMAGE_PATH = "./assets/demo2.jpg"
 CLASSES = "./path/"   # change this to the prompt, as []
-BOX_THRESHOLD = 0.25
-TEXT_THRESHOLD = 0.25
+BOX_THRESHOLD = 0.20
+TEXT_THRESHOLD = 0.20
 NMS_THRESHOLD = 0.8
 
 DATASET_PATH = ''
