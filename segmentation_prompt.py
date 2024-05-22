@@ -29,9 +29,10 @@ parser.add_argument("--prompt_path", type=str, default="./", help="Classes here 
 parser.add_argument("--box_threshold", type=float, default=0.20, help="Box threshold")
 parser.add_argument("--text_threshold", type=float, default=0.20, help="Text threshold")
 parser.add_argument("--nms_threshold", type=float, default=0.8, help="NMS threshold")
-parser.add_argument("--dataset_name", type=str, default="Clipart", help="Name of the dataset")
+parser.add_argument("--dataset_name", type=str, default="video", help="Name of the dataset")
 parser.add_argument("--dataset_path", type=str, default="./data/", help="Path to the dataset")
 
+parser.add_argument("--video_name", type=str, default="bear", help="Name of the video")
 arg = parser.parse_args()
 
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -63,30 +64,56 @@ NMS_THRESHOLD = arg.nms_threshold
 
 
 
-# load image
+# load image/video
+VIDEO_NAME = arg.video_name
 DATASET = arg.dataset_name
 DATASET_PATH = arg.dataset_path
-dataset_path = f"{DATASET_PATH}/{DATASET}/"
+dataset_path = f"{DATASET_PATH}{DATASET}"
+if DATASET == "video":
+    dataset_path = f"{dataset_path}/{VIDEO_NAME}/original"
 
 # load data instance
-image_instance = f"{dataset_path}/data/prompts_selected.jsonl"
-object_instance = f"{dataset_path}/data/objects.jsonl"
+if DATASET == "video":
+    # prompt + object
+    image_instance = f"{DATASET_PATH}/{DATASET}/prompt/{VIDEO_NAME}.jsonl"
+    object_instance = image_instance
 
-for line in open(image_instance):
-    line = json.loads(line)
-    # find the same task_id in the object_instance
-    for obj_line in open(object_instance):
-        obj_line = json.loads(obj_line)
-        if obj_line["task_id"] == line["task_id"]:
-            line["prompt"] = obj_line["objects"]
-            break
-    SOURCE_IMAGE_PATH = "data/Clipart/figures/" + line["image"]
-    CLASSES = line["prompt"]
-    # it is a list of strings
+    for line in open(image_instance):
+        # get prompt, objects
+        line = json.loads(line)
+        prompt = line["prompt"]
+        objects = line["objects"]
+
+    SOURCE_IMAGE_PATH_LIST = []
+    # for all image in the path
+    for image in os.listdir(dataset_path):
+        SOURCE_IMAGE_PATH_LIST.append(f"{dataset_path}/{image}")
+    # using objects for segmentation
+    CLASSES = objects
     CLASSES = [c.lower() for c in CLASSES]
+        
 
+else:
+    image_instance = f"{dataset_path}/data/prompts_selected.jsonl"
+    object_instance = f"{dataset_path}/data/objects.jsonl"
 
-    image = cv2.imread(SOURCE_IMAGE_PATH)
+    for line in open(image_instance):
+        line = json.loads(line)
+        # find the same task_id in the object_instance
+        for obj_line in open(object_instance):
+            obj_line = json.loads(obj_line)
+            if obj_line["task_id"] == line["task_id"]:
+                line["prompt"] = obj_line["objects"]
+                break
+        SOURCE_IMAGE_PATH = "data/Clipart/figures/" + line["image"]
+        CLASSES = line["prompt"]
+        # it is a list of strings
+        CLASSES = [c.lower() for c in CLASSES]
+        
+print("CLASSES:", CLASSES)
+
+def object_segment_process(image_path, CLASSES, task_id):
+    image = cv2.imread(image_path)
 
     # detect objects
     detections = grounding_dino_model.predict_with_classes(
@@ -104,12 +131,11 @@ for line in open(image_instance):
         in detections]
     annotated_frame = box_annotator.annotate(scene=image.copy(), detections=detections, labels=labels)
 
-    output_path = f"{dataset_path}/output/dino"
+    output_path = f"{DATASET_PATH}/{DATASET}/{VIDEO_NAME}/output/dino"
     # check if the output directory exists
     if not os.path.exists(output_path):
         os.makedirs(output_path)
 
-    task_id = line["task_id"]
 
     # save the annotated grounding dino image
     cv2.imwrite(f"{output_path}/{task_id}.jpg", annotated_frame)
@@ -184,7 +210,7 @@ for line in open(image_instance):
     annotated_image = box_annotator.annotate(scene=annotated_image, detections=detections, labels=labels)
 
     # save the annotated grounded-sam image
-    output_path = f"{dataset_path}/output/grounded_sam"
+    output_path = f"{DATASET_PATH}/{DATASET}/{VIDEO_NAME}/output/grounded_sam"
     # check if the output directory exists
     if not os.path.exists(output_path):
         os.makedirs(output_path)
@@ -197,3 +223,13 @@ for line in open(image_instance):
             "detections": info
         }) + "\n")
     
+
+if DATASET == "video":
+    for image_path in SOURCE_IMAGE_PATH_LIST:
+        task_id = image_path.split("/")[-1].split(".")[0]
+        object_segment_process(image_path, CLASSES, task_id)
+else:
+    task_id = line["task_id"]
+    object_segment_process(SOURCE_IMAGE_PATH, CLASSES, task_id)
+
+

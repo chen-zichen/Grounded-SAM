@@ -165,9 +165,93 @@ def save_mask_data(output_dir, mask_list, box_list, label_list, id):
             'logit': float(logit),
             'box': box.numpy().tolist(),
         })
+    # check if the output_dir file exists
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
     with open(os.path.join(output_dir, 'label.jsonl'), 'a') as f:
         f.write(json.dumps(json_data) + '\n')
     
+def segment_process(image_path, dataset, image_file, file_name, output_dir, model, box_threshold, text_threshold, device):
+    # image_file is like "bear"
+    # file_name is like "0.png"
+    image_pil, image = load_image(image_path)
+    raw_image = image_pil.resize(
+                    (384, 384))
+    raw_image  = transform(raw_image).unsqueeze(0).to(device)
+
+    res = inference_ram(raw_image , ram_model)
+
+    # Currently ", " is better for detecting single tags
+    # while ". " is a little worse in some case
+    tags=res[0].replace(' |', ',')
+
+    print("Image Tags: ", res[0])
+
+    # run grounding dino model
+    boxes_filt, scores, pred_phrases = get_grounding_output(
+        model, image, tags, box_threshold, text_threshold, device=device
+    )
+    # initialize SAM
+    if use_sam_hq:
+        print("Initialize SAM-HQ Predictor")
+        predictor = SamPredictor(build_sam_hq(checkpoint=sam_hq_checkpoint).to(device))
+    else:
+        predictor = SamPredictor(build_sam(checkpoint=sam_checkpoint).to(device))
+    image = cv2.imread(image_path)
+    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    predictor.set_image(image)
+
+    size = image_pil.size
+    H, W = size[1], size[0]
+    for i in range(boxes_filt.size(0)):
+        boxes_filt[i] = boxes_filt[i] * torch.Tensor([W, H, W, H])
+        boxes_filt[i][:2] -= boxes_filt[i][2:] / 2
+        boxes_filt[i][2:] += boxes_filt[i][:2]
+
+    boxes_filt = boxes_filt.cpu()
+    # use NMS to handle overlapped boxes
+    print(f"Before NMS: {boxes_filt.shape[0]} boxes")
+    nms_idx = torchvision.ops.nms(boxes_filt, scores, iou_threshold).numpy().tolist()
+    boxes_filt = boxes_filt[nms_idx]
+    pred_phrases = [pred_phrases[idx] for idx in nms_idx]
+    print(f"After NMS: {boxes_filt.shape[0]} boxes")
+        
+
+    transformed_boxes = predictor.transform.apply_boxes_torch(boxes_filt, image.shape[:2]).to(device)
+
+    masks, _, _ = predictor.predict_torch(
+        point_coords = None,
+        point_labels = None,
+        boxes = transformed_boxes.to(device),
+        multimask_output = False,
+    )
+    
+    # draw output image
+    plt.figure(figsize=(10, 10))
+    plt.imshow(image)
+    for mask in masks:
+        show_mask(mask.cpu().numpy(), plt.gca(), random_color=True)
+    for box, label in zip(boxes_filt, pred_phrases):
+        show_box(box.numpy(), plt.gca(), label)
+
+    # plt.title('RAM-tags' + tags + '\n' + 'RAM-tags_chineseing: ' + tags_chinese + '\n')
+    plt.axis('off')
+    
+    if dataset == "video":
+        plt.savefig(
+            os.path.join(output_dir, f"{file_name}.jpg"),
+            bbox_inches="tight", dpi=300, pad_inches=0.0
+        )
+        print(f"Save image to {output_dir}")
+    else:
+        plt.savefig(
+            os.path.join(output_dir, f"{image_file}.jpg"), 
+            bbox_inches="tight", dpi=300, pad_inches=0.0
+        )
+
+    save_mask_data(output_dir, masks, boxes_filt, pred_phrases, id)
+
+
 
 if __name__ == "__main__":
 
@@ -203,6 +287,7 @@ if __name__ == "__main__":
     
     # phylog
     parser.add_argument("--dataset_name", type=str, default="Clipart", help="dataset name")
+    parser.add_argument("--video_name", type=str, default="bear", help="video name")
 
     args = parser.parse_args()
 
@@ -221,6 +306,8 @@ if __name__ == "__main__":
     text_threshold = args.text_threshold
     iou_threshold = args.iou_threshold
     device = args.device
+
+    video_name = args.video_name
     
     # ChatGPT or nltk is required when using tags_chineses
     # openai.api_key = openai_key
@@ -271,7 +358,14 @@ if __name__ == "__main__":
         # convert to list
         data_instances = [value for key, value in data_instances.items()]
     
-    output_dir = f"{output_dir}/{dataset_name}/segment/"
+    elif dataset_name == "video":
+
+        with open(f"{dataset_path}/prompt/{video_name}.jsonl", "r") as f:
+            # for example, video_name = "bear", "bear.jsonl"
+            data_instances = [json.loads(line) for line in f.readlines()]
+
+    
+    output_dir = f"{output_dir}/{dataset_name}/{video_name}/segment"
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
@@ -281,79 +375,25 @@ if __name__ == "__main__":
             image_file = instance['image']
             image_path = f"{dataset_path}/figures/{image_file}"
             id = instance['task_id']
+            file_name = None
+            segment_process(image_file, dataset_name, file_name, file_name, output_dir, model, box_threshold, text_threshold, device)
         elif dataset_name == "COCO":
             image_file = instance['id']   # TODO: fix name bug id->image
             image_path = f"{dataset_path}/generated_images/{image_file}.png"
             id = instance['id']
-
-        image_pil, image = load_image(image_path)
-
-        raw_image = image_pil.resize(
-                    (384, 384))
-        raw_image  = transform(raw_image).unsqueeze(0).to(device)
-
-        res = inference_ram(raw_image , ram_model)
-
-        # Currently ", " is better for detecting single tags
-        # while ". " is a little worse in some case
-        tags=res[0].replace(' |', ',')
-
-        print("Image Tags: ", res[0])
-
-        # run grounding dino model
-        boxes_filt, scores, pred_phrases = get_grounding_output(
-            model, image, tags, box_threshold, text_threshold, device=device
-        )
-
-        # initialize SAM
-        if use_sam_hq:
-            print("Initialize SAM-HQ Predictor")
-            predictor = SamPredictor(build_sam_hq(checkpoint=sam_hq_checkpoint).to(device))
-        else:
-            predictor = SamPredictor(build_sam(checkpoint=sam_checkpoint).to(device))
-        image = cv2.imread(image_path)
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        predictor.set_image(image)
-
-        size = image_pil.size
-        H, W = size[1], size[0]
-        for i in range(boxes_filt.size(0)):
-            boxes_filt[i] = boxes_filt[i] * torch.Tensor([W, H, W, H])
-            boxes_filt[i][:2] -= boxes_filt[i][2:] / 2
-            boxes_filt[i][2:] += boxes_filt[i][:2]
-
-        boxes_filt = boxes_filt.cpu()
-        # use NMS to handle overlapped boxes
-        print(f"Before NMS: {boxes_filt.shape[0]} boxes")
-        nms_idx = torchvision.ops.nms(boxes_filt, scores, iou_threshold).numpy().tolist()
-        boxes_filt = boxes_filt[nms_idx]
-        pred_phrases = [pred_phrases[idx] for idx in nms_idx]
-        print(f"After NMS: {boxes_filt.shape[0]} boxes")
+            file_name = None
+            segment_process(image_file, dataset_name, file_name, file_name, output_dir, model, box_threshold, text_threshold, device)
+        elif dataset_name == "video":
+            video_path = f"{dataset_path}/{video_name}/original"
+            all_frames = os.listdir(video_path)
+            id = instance['id']
+            # image_path includes all frames
+            image_path = all_frames
+            for file_name in image_path:
+                file_name = file_name.split('/')[-1]
+                file_name = file_name.split('.')[0]
+                image_path = f"{video_path}/{file_name}"
+                completed_image_path = f"{image_path}.png"
+                segment_process(completed_image_path, dataset_name, video_name, file_name, output_dir, model, box_threshold, text_threshold, device)
+            
         
-
-        transformed_boxes = predictor.transform.apply_boxes_torch(boxes_filt, image.shape[:2]).to(device)
-
-        masks, _, _ = predictor.predict_torch(
-            point_coords = None,
-            point_labels = None,
-            boxes = transformed_boxes.to(device),
-            multimask_output = False,
-        )
-        
-        # draw output image
-        plt.figure(figsize=(10, 10))
-        plt.imshow(image)
-        for mask in masks:
-            show_mask(mask.cpu().numpy(), plt.gca(), random_color=True)
-        for box, label in zip(boxes_filt, pred_phrases):
-            show_box(box.numpy(), plt.gca(), label)
-
-        # plt.title('RAM-tags' + tags + '\n' + 'RAM-tags_chineseing: ' + tags_chinese + '\n')
-        plt.axis('off')
-        
-        plt.savefig(
-            os.path.join(output_dir, f"{image_file}"), 
-            bbox_inches="tight", dpi=300, pad_inches=0.0
-        )
-
-        save_mask_data(output_dir, masks, boxes_filt, pred_phrases, id)
